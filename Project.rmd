@@ -1,0 +1,194 @@
+---
+title: "Coursera Practical Machine Learning - Course Assignment"
+author: "Honto Ming"
+date: "June 13, 2015"
+output: html_document
+---
+# Introduction
+For the Coursera Practical Machine Learning Course Assignment, we will attemp to detect if a person made mistakes when performing Unilateral Dumbell Bicep Curls from data captured through sensors on various parts of the the participant's body and on the dumbell. The data we are using is obtained from Velloso et. al's paper "Qualitative Activity Recognition of Weight Lifting Exercises" [1]
+
+The data can be obtained through their website at [link](http://groupware.les.inf.puc-rio.br/har)
+
+# Data Cleaning
+Prior to building any models or splitting the data into testing and training sets, we first have to transform the data set so that it follows the clean and tidy data principles set out in the Getting and Cleaning Data Course.
+
+The data set contains 19622 observations with 160 variables. First, we removed 100 variables where more than 90% of observations were blank, NA or somehow invalid. Then, we removed variables that are not considered as predictors (i.e. not from sensor data such as user_name)
+
+We then split up the data into training and testign sets with a 60-40 train-test split.
+
+```{r, echo=FALSE, results='hold', message=FALSE}
+library(ggplot2)
+library(caret)
+library(dplyr)
+
+# Load in data
+#setwd("./Coursera/Practical_Machine_Learning/Project")
+exercise <- read.csv("./data/pml-training.csv", na.strings=c("NA", "", "#DIV/0!"))
+#summary(exercise)
+
+# Remove columns with more than 75% NA's
+na.cols <- colSums(is.na(exercise))
+na.cols <- sapply(na.cols, function(x) x > 0.75*nrow(exercise))
+exercise <- exercise[, !na.cols]
+
+# Remove irrelevant columns
+exercise <- exercise[, (8:60)]
+
+# split into train and test
+trainIdx = createDataPartition(exercise$classe, p = 0.6, list=FALSE)
+exercise.train <- exercise[trainIdx,]
+exercise.test <- exercise[-trainIdx,]
+```
+
+# Exploratory Analysis
+With 53 features remaining, a scatterplot matrix will not be comprehendible. Rather, we will do a correlation heatmap to see if there are highly correlated covariates.
+
+```{r, echo=FALSE}
+data <- exercise.train[,1:52] # Do not include the label
+library(reshape2)
+qplot(x=Var1, y=Var2, data=melt(cor(data, use="p")), fill=value, geom="tile") +
+   scale_fill_gradient2(limits=c(-1, 1)) + 
+    theme(axis.text.x = element_text(angle = 90, hjust = 1))
+rm(data)
+```
+
+# Preprocessing
+Next, we examine if there are any zero variance or near zero variance variables using the nearZeroVar() function with the default freqCut and uniqueCut of 95/5 and 10, respectively. The results show that there are no near zero variance values so we can proceed.
+
+```{r, echo=FALSE, results='hold', message=FALSE}
+nz.var <- nearZeroVar(exercise.train, saveMetrics = TRUE)
+```
+
+Otherwise, the data seems to be tidy, and since we will be using tree-based classification model, standardizing the variables will not have an impact on accuracy. We will perform no pre-processing at this time. 
+
+# Model Training and Tuning
+For model selection and tuning of parameters, we will use the extensive tools provided by the caret package. For this assignment, we will train the following models and their associated parameters where time permits.
+
+Model                              | Tuning Parameters
+-----------------------------------|---------------------------------------------------
+Classification Tree (rpart)        | complexity (cp)
+Random Forest (rf)                 | # of variables at split (mtry)
+Stochastic Gradient Boosting (gbm) | n.trees, interaction.depth, shrinkage
+
+In addition, we will use 10-fold cross validation to obtain an estimated out-of-sample error to determine the best performing model.
+
+```{r, echo=FALSE, results='hide', message=FALSE}
+# enable multi-core processing
+library(doParallel)
+cl <- makeCluster(detectCores()-1)
+registerDoParallel(cl)
+```
+
+## Classification Trees
+```{r, echo=FALSE}
+
+# set seeds so this is reproducible while running in parallel on multicores
+set.seed(123)
+seeds <- vector(mode="list", length=51) #length=(n_repeats*n_resampling)+1
+for(i in 1:50) seeds[[i]] <- sample.int(1000, 1)
+## For the last model:
+seeds[[51]] <- sample.int(1000, 1)
+# trainControl object for the cv
+ctrl <- trainControl(method='cv', number=10)
+```
+
+We will use use the following values for tuning the complexity tuning parameter (cp) in our tuning grid to determine which value we should use:
+
+```{r}
+# tuning grid for cp
+cart.grid <- expand.grid(cp=c(0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01))
+```
+```{r, echo=FALSE, message=FALSE}
+# fit models
+set.seed(123)
+cart1 <- train(classe~., data=exercise.train, method='rpart', trControl=ctrl,
+               tuneGrid=cart.grid)
+cart1
+```
+
+As we can see from the results, the optimal parameters for a CART model is cp=0.0001 resulting in an estiamted out-of-sample error of just 0.08.
+
+## Random Forest
+```{r, echo=FALSE, message=FALSE}
+# set seeds so this is reproducible while running in parallel on multicores
+set.seed(123)
+seeds <- vector(mode="list", length=51) #length=(n_repeats*n_resampling)+1
+for(i in 1:50) seeds[[i]] <- sample.int(1000, 1)
+## For the last model:
+seeds[[51]] <- sample.int(1000, 1)
+# trainControl object for the repeated cv
+ctrl <- trainControl(method='cv', number=10)
+```
+
+Due to the limited amount of time available, we will use 10-fold cross validation with no repeats. Also, we will use use the following values for tuning the the mtry parameter which controls how many variables will be considered to split at each node:
+
+```{r}
+# tuning grid for mtry
+rf.grid <- expand.grid(mtry=c(3,5,7,9,11))
+```
+
+Note that the tuning values are around the suggested value of $\sqrt{p}$ where $p$ equal the number of covariates.
+
+```{r, echo=FALSE, message=FALSE}
+# fit models
+set.seed(123)
+rf1 <- train(classe~., data=exercise.train, method='rf', trControl=ctrl,
+               tuneGrid=rf.grid)
+rf1
+```
+
+As we can see from the results, the optimal parameters for a Random Forest model is mtry = resulting in an estiamted out-of-sample error of just.
+
+## Boosted Trees
+```{r, echo=FALSE, message=FALSE}
+# set seeds so this is reproducible while running in parallel on multicores
+set.seed(123)
+seeds <- vector(mode="list", length=51) #length=(n_repeats*n_resampling)+1
+for(i in 1:50) seeds[[i]] <- sample.int(1000, 125)
+## For the last model:
+seeds[[51]] <- sample.int(1000, 1)
+# trainControl object for the repeated cv
+ctrl <- trainControl(method='cv', number=10)
+```
+
+Unlike the other 2 models we have trained, the gb, model has many more tuning parameters. Being too extreme with a number of these tuning parameters may cause overfitting. Also, with using 10-fold cross-validation repeated 5 times, each new value added to a parameter in the tuning grid has a multiplicative effect on the number of runs that need to be done. Hence, we are going to keep shrinkage constant at 0.1 
+
+```{r}
+# tuning grid for mtry
+gbm.grid <- expand.grid(interaction.depth=c(1,2,4,6,8),
+                        n.trees=c(50, 100, 150, 200, 250),
+                        shrinkage=0.1)
+```
+```{r, echo=FALSE, message=FALSE}
+# fit models
+set.seed(123)
+gbm1 <- train(classe~., data=exercise.train, method='gbm', trControl=ctrl,
+               tuneGrid=gbm.grid, verbose=FALSE)
+gbm1
+```
+
+As we can see from the results, the optimal parameters for a Boosted Tree model is n.trees = 250 and interaction.depth = 8, and shrinkage = 0.1. With these parameters, the resulting estimated out-of-sample error is just 0.0084067.
+
+## Model and Parameter Selection
+Now we can select the best model and it's associated parameters as the one that gave us the lowest estimated out of sample error through cross-validation. The performance of the tuned models are:
+
+Model                        | Optimized Parameters                    | Accuracy  
+-----------------------------|-----------------------------------------|-----------
+Classification Tree          | cp=0.0001                               | 0.9192422 
+Random Forest                | mtry=9                                  | 0.9933767 
+Stochastic Gradient Boosting | n.trees=250, int.depth=8, shrinkage=0.1 | 0.9915933 
+
+While the accuracy for all 3 models are very close to each other, the best performing model is Random Forest with an estimated out-of sample accuracy of 0.9933767
+
+# Out-of-Sample Testing
+We will now test our selected model on a hold-out test set
+```{r}
+# predict on test set
+pred.test <- predict(rf1, exercise.test)
+postResample(pred.test, exercise.test$classe)
+confusionMatrix(pred.test, exercise.test$classe)
+```
+As we can see from the results, the random forest model performs very well on the testing data set with an out-of-sample accuracy of 0.9941 and error of 0.0059.
+
+# References
+1. Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. _Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13)._ Stuttgart, Germany: ACM SIGCHI, 2013.
